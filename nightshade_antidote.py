@@ -39,11 +39,41 @@ from PIL import Image
 from collections import Counter
 from sklearn.neighbors import NearestNeighbors
 import exiftool
+import torch
 
 # ---- Settings / Parameters ----
 PATCH_SIZE = 8
 CM_THRESHOLD = 0.1
 DCT_SIZE = 512  # The size to which images are resized for DCT-based checks
+
+# --------------------------------------------------------------------------------
+# Example: Simple "model" saving/loading (for the poison detection placeholder)
+# --------------------------------------------------------------------------------
+
+def save_dummy_model(file_path="nightshade_model.pkl"):
+    """
+    Example function to save a "model" for reuse. In reality, you'd
+    store your threshold, top singular vectors, or other learned parameters.
+    """
+    dummy_data = {
+        "threshold": 0.9,
+        "notes": "Example placeholder model for Nightshade detection"
+    }
+    with open(file_path, "wb") as f:
+        pickle.dump(dummy_data, f)
+    print(f"[INFO] Model saved to {file_path}")
+
+def load_dummy_model(file_path="nightshade_model.pkl"):
+    """
+    Load the "model" data for the poison detection. This is just a stub example.
+    """
+    if not os.path.exists(file_path):
+        print(f"[WARN] {file_path} does not exist. Returning None.")
+        return None
+    with open(file_path, "rb") as f:
+        model_data = pickle.load(f)
+    print(f"[INFO] Loaded model from {file_path}: {model_data}")
+    return model_data
 
 
 # --------------------------------------------------------------------------------
@@ -88,25 +118,26 @@ def detect_copy_move(img, patch_size=PATCH_SIZE, threshold=CM_THRESHOLD):
 
     return flags
 
-
 def analyze_metadata(img_path):
     """
     Analyze metadata using ExifTool. Returns a string summary.
     """
     report_str = ""
-    with exiftool.ExifTool() as et:
-        metadata = et.get_metadata(img_path)
-        for tag in metadata:
-            report_str += f"{tag}: {metadata[tag]}\n"
-    return report_str
+    try:
+        with exiftool.ExifTool() as et:
+            metadata = et.get_metadata(img_path)
+            for tag in metadata:
+                report_str += f"{tag}: {metadata[tag]}\n"
+    except Exception as e:
+        report_str += f"[WARN] ExifTool error: {str(e)}\n"
 
+    return report_str
 
 def spectral_analysis(img):
     """
     Perform FFT on a grayscale image, returning (magnitude_spectrum, phase_spectrum).
-    Also does a quick show in subplots.
+    We'll do a quick shift + log transform for the magnitude.
     """
-    # Convert to float64 for FFT
     f_img = fft.fft2(img.astype(np.float64))
     f_img_shifted = fft.fftshift(f_img)
 
@@ -114,7 +145,6 @@ def spectral_analysis(img):
     phase_spectrum = np.angle(f_img_shifted)
 
     return magnitude_spectrum, phase_spectrum
-
 
 def pixel_ordering_check(img):
     """
@@ -137,27 +167,23 @@ def pixel_ordering_check(img):
     corr_coeff = np.corrcoef(img_dct_normed.flatten(), ref_dct_normed.flatten())[0, 1]
     return corr_coeff
 
-
 def compression_artifacts_check(img_path, img):
     """
     Check for JPEG quantization artifacts.
-    However, if input is PNG, compression ratio logic won't reflect JPEG.
+    If input is PNG, ratio won't reflect typical JPEG compression.
     """
     bit_depth = img.dtype.itemsize * 8
-    # We can't guess actual uncompressed size for PNG, but let's just do a naive ratio:
     file_size = os.path.getsize(img_path)
-    # approximate uncompressed size
-    uncompressed_size = img.shape[0] * img.shape[1] * bit_depth/8
+    uncompressed_size = img.shape[0] * img.shape[1] * (bit_depth / 8.0)
     if uncompressed_size == 0:
         ratio = 0
     else:
         ratio = file_size / uncompressed_size
 
     print(f"Bit depth: {bit_depth}")
-    print(f"Approx Compression ratio: {ratio:.2f}")
+    print(f"Approx. Compression ratio: {ratio:.2f}")
 
     dct_img = cv2.dct(img.astype(np.float32))
-    # Toy example of a standard luminance quant table
     quantization_table = np.array([
         [16, 11, 10, 16, 24, 40, 51, 61],
         [12, 12, 14, 19, 26, 58, 60, 55],
@@ -175,31 +201,27 @@ def compression_artifacts_check(img_path, img):
     for i in range(0, H, step):
         for j in range(0, W, step):
             block = dct_img[i:i+step, j:j+step]
-            # If block is not the same shape as the quant table, skip
             if block.shape != (8, 8):
                 continue
-            # remainder mod
             remainder = np.abs(block) % quantization_table
             threshold = quantization_table * 0.1
-            # If remainder < threshold => we suspect quantization artifact
             flags_block = (remainder < threshold).astype(np.uint8)
             flags[i:i+step, j:j+step] = flags_block
-    return flags
 
+    return flags
 
 def file_format_check(img_path):
     """
-    Check file format by reading the first few bytes. 
-    If PNG, signature is 0x89 0x50 0x4E 0x47
-    If JPEG, signature is 0xFF 0xD8, and end is 0xFF 0xD9
+    Check file format by reading the first few bytes.
+    Distinguish PNG vs JPG if possible.
     """
     with open(img_path, "rb") as f:
         file_bytes = f.read()
     if len(file_bytes) < 8:
-        print("File too small or corrupted. Can't identify format.")
+        print("File too small or corrupted. Cannot identify format.")
         return
 
-    # Check PNG
+    # PNG check
     if file_bytes[:4] == b"\x89PNG":
         print("File format appears to be PNG.")
     elif file_bytes[:2] == b"\xff\xd8":
@@ -207,20 +229,47 @@ def file_format_check(img_path):
     else:
         print("Unknown or non-PNG/JPEG file format signature.")
 
+# --------------------------------------------------------------------------------
+# Poison detection logic (placeholder)
+# --------------------------------------------------------------------------------
 
-# --------------------------------------------------------------------------------
-# Poison detection placeholder
-# --------------------------------------------------------------------------------
+MODEL_DATA = None
+
+def init_poison_detector(model_path="nightshade_model.pkl"):
+    """
+    Example to load or create a "model" for poisoning detection.
+    """
+    global MODEL_DATA
+    if os.path.exists(model_path):
+        MODEL_DATA = load_dummy_model(model_path)
+    else:
+        print("[INFO] No existing poison model found. Creating dummy and saving.")
+        save_dummy_model(model_path)
+        MODEL_DATA = load_dummy_model(model_path)
 
 def detect_poisoning(img_tensor):
     """
     This is a placeholder for advanced spectral/backdoor detection logic.
     Return True if poisoning is suspected, False otherwise.
-    Replace with your actual logic from your 'NightshadeDetector' or other code.
+    For demonstration, uses random detection or we can base
+    it on the dummy model's threshold somehow.
     """
-    # For now, random detection for demonstration
-    return random.choice([False, True])
+    # If you had an actual model, you'd do something like:
+    # features = your_extractor(img_tensor)
+    # outlier_score = compute_outlier(features, MODEL_DATA)
+    # return (outlier_score > MODEL_DATA["threshold"])
 
+    # For demonstration:
+    if MODEL_DATA is None:
+        print("[WARN] No model data loaded; default random detection.")
+        return random.choice([False, True])
+    else:
+        # e.g. 50% chance if threshold is 0.9, etc.
+        # This is purely for illustration.
+        chance = random.random()
+        if chance > 0.5:
+            return True
+        return False
 
 # --------------------------------------------------------------------------------
 # Final report assembly
@@ -238,16 +287,15 @@ def output_report(img_path, img):
     - poison detection
     """
     print("\n===== NIGHTSHADE ANTIDOTE REPORT =====\n")
-    # 1. File format
+
+    print("[Step 1] File format check...")
     file_format_check(img_path)
 
-    # 2. Metadata
-    print("\n--- Metadata Analysis ---")
+    print("\n[Step 2] Metadata Analysis...")
     metadata_str = analyze_metadata(img_path)
     print(metadata_str)
 
-    # 3. Copy-move
-    print("--- Copy-Move Forgery Detection ---")
+    print("[Step 3] Copy-Move Forgery Detection...")
     flags = detect_copy_move(img)
     num_flags = np.sum(flags)
     if num_flags > 0:
@@ -258,8 +306,7 @@ def output_report(img_path, img):
     else:
         print("No copy-move forgery detected.")
 
-    # 4. Spectral analysis
-    print("\n--- Spectral Analysis ---")
+    print("\n[Step 4] Spectral Analysis...")
     mag_spec, phase_spec = spectral_analysis(img)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
     ax1.imshow(mag_spec, cmap='gray')
@@ -268,7 +315,7 @@ def output_report(img_path, img):
     ax2.set_title("Phase Spectrum")
     plt.show()
 
-    # Check anomalies in magnitude
+    # Quick anomaly detection for magnitude
     mag_mean = np.mean(mag_spec)
     mag_std = np.std(mag_spec)
     mag_threshold = mag_mean + 3 * mag_std
@@ -276,42 +323,36 @@ def output_report(img_path, img):
     if len(mag_anomalies[0]) > 0:
         print(f"Detected {len(mag_anomalies[0])} anomalies in the magnitude spectrum.")
     else:
-        print("No anomalies detected in the magnitude spectrum.")
+        print("No anomalies in magnitude spectrum.")
 
-    # 5. Pixel ordering check (if reference.jpg is available)
-    print("\n--- Pixel Ordering Check vs. reference.jpg ---")
+    print("\n[Step 5] Pixel Ordering Check (Reference-based)...")
     corr_coeff = pixel_ordering_check(img)
     if corr_coeff != 0.0:
         print(f"Correlation to reference: {corr_coeff:.4f}")
     else:
-        print("No reference image found or correlation is 0.0")
+        print("No reference image or correlation is 0.0")
 
-    # 6. Compression artifacts
-    print("\n--- Compression Artifacts Check ---")
+    print("\n[Step 6] Compression Artifacts Check...")
     artifact_flags = compression_artifacts_check(img_path, img)
     artifact_count = np.sum(artifact_flags)
     if artifact_count > 0:
         print(f"Detected {artifact_count} potential compression artifact blocks.")
     else:
         print("No compression artifacts flagged.")
-    
-    # 7. Poison detection (placeholder)
-    print("\n--- Poison Detection (Demo) ---")
-    # Convert to (3,512,512) float32 for the logic
-    # (Here, it's grayscale, so we just stack 3 channels or something)
+
+    print("\n[Step 7] Poison Detection Check...")
+    # Convert grayscale to 3-channel for detect_poisoning logic if needed
     if len(img.shape) == 2:
-        # stack to fake 3 channels
         cimg = np.stack([img]*3, axis=0)
     else:
-        # reorder to (C,H,W)
-        cimg = np.transpose(img, (2,0,1))
-    cimg_t = torch.from_numpy(cimg).float() / 255. if img.dtype == np.uint8 else torch.from_numpy(cimg).float()
-    suspicious = detect_poisoning(cimg_t)
-    if suspicious:
-        print("Poison detection indicates this image might be Nightshade-poisoned!")
-    else:
-        print("No poisoning suspected by placeholder logic.")
+        cimg = np.transpose(img, (2, 0, 1))
+    cimg_t = torch.from_numpy(cimg).float()
 
+    is_poisoned = detect_poisoning(cimg_t)
+    if is_poisoned:
+        print("[ALERT] This image appears POISONED by Nightshade (placeholder logic)!")
+    else:
+        print("[OK] No poisoning suspected by placeholder logic.")
 
 # --------------------------------------------------------------------------------
 # Main
@@ -327,22 +368,30 @@ def main():
         print(f"File {input_path} does not exist.")
         sys.exit(1)
 
-    # Read the image (png or jpg) using OpenCV
+    # Initialize or load the poison detection model (dummy)
+    init_poison_detector("nightshade_model.pkl")
+
+    # Read the image (PNG or JPG) using OpenCV
+    print(f"[INFO] Reading {input_path}")
     img_cv = cv2.imread(input_path, cv2.IMREAD_COLOR)
     if img_cv is None:
-        print(f"Could not read image {input_path} with OpenCV. Check file format.")
+        print(f"[ERROR] Could not read image {input_path} with OpenCV.")
         sys.exit(1)
 
     # Convert to grayscale
     img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    # Resize to DCT_SIZE if desired
+    # Resize for uniform DCT processing
     img_gray = cv2.resize(img_gray, (DCT_SIZE, DCT_SIZE))
-    # Convert to float [0..255], or normalized
-    # but many checks assume [0..1], so let's keep [0..255] for the existing code except for some ops
-    # We'll do [0..255] as is:
-    
-    # Generate the forensic report
+
+    # Output a forensic report (with plots)
+    print("[INFO] Generating forensic report...")
     output_report(input_path, img_gray)
+
+    # Example: We have a simple "model", so we might save updated info if we had any updates
+    # Right now no training is done, but let's show how we might do it:
+    # save_dummy_model("nightshade_model.pkl")
+
+    print("[INFO] Finished. Exiting.")
 
 if __name__ == "__main__":
     main()
