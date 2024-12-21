@@ -249,27 +249,77 @@ def init_poison_detector(model_path="nightshade_model.pkl"):
 
 def detect_poisoning(img_tensor):
     """
-    This is a placeholder for advanced spectral/backdoor detection logic.
-    Return True if poisoning is suspected, False otherwise.
-    For demonstration, uses random detection or we can base
-    it on the dummy model's threshold somehow.
-    """
-    # If you had an actual model, you'd do something like:
-    # features = your_extractor(img_tensor)
-    # outlier_score = compute_outlier(features, MODEL_DATA)
-    # return (outlier_score > MODEL_DATA["threshold"])
+    A simple SVD-based 'poison detection' demonstration.
+    Returns True if the image is 'suspiciously' different from
+    typical distribution, based on singular values.
 
-    # For demonstration:
-    if MODEL_DATA is None:
-        print("[WARN] No model data loaded; default random detection.")
-        return random.choice([False, True])
+    Steps:
+      1. Flatten the image data (C,H,W) -> (N,)
+      2. Center it (subtract mean)
+      3. Compute SVD on the reshaped data or on a small patch
+      4. Use a ratio of top singular value to sum of singular values as a heuristic
+         (If it's too high, we suspect it might be 'poisoned').
+
+    In a real pipeline, you'd:
+      - Extract stable diffusion VAE or CNN features
+      - Combine them into a large matrix of known-clean samples
+      - Fit an SVD or other model and store top vectors, thresholds, etc.
+      - Evaluate a new sample's outlier score.
+
+    For now, we do everything ad-hoc each time for demonstration.
+    """
+
+    # If the image is grayscale: shape = (H,W). If it's 3-channel: shape = (C,H,W).
+    # Let's unify to a 1D vector for SVD. We'll just do a 1D SVD on the entire flattened image.
+    # Typically, you’d do something more advanced with blocks or feature extraction.
+    arr = img_tensor.cpu().numpy()
+
+    if arr.ndim == 3:
+        # (C,H,W) -> flatten
+        vec = arr.reshape(-1).astype(np.float64)
+    elif arr.ndim == 2:
+        # (H,W) -> flatten
+        vec = arr.ravel().astype(np.float64)
     else:
-        # e.g. 50% chance if threshold is 0.9, etc.
-        # This is purely for illustration.
-        chance = random.random()
-        if chance > 0.5:
-            return True
-        return False
+        print("[WARN] Unexpected shape in detect_poisoning:", arr.shape)
+        return False  # fallback
+
+    # Center (subtract mean)
+    vec_mean = np.mean(vec)
+    centered = vec - vec_mean
+
+    # We do an SVD on (some dimension,1) or a small patch. 
+    # For demonstration, treat centered as row matrix: shape (1,N).
+    # Then s[0] is the single singular value if shape is (1,N).
+    # Actually let's chunk it for demonstration so it's at least (M,N).
+    chunk_size = 512  # arbitrary chunk for a pseudo-matrix shape
+    if len(centered) < chunk_size:
+        # not enough data; just do a fallback
+        s = np.linalg.svd(centered.reshape(1, -1), full_matrices=False, compute_uv=False)
+    else:
+        # reshape e.g. (M,N) with M*N = len(centered)
+        # pick M = chunk_size
+        M = chunk_size
+        N = len(centered) // M
+        truncated = centered[: M*N]  # take first M*N
+        matrix = truncated.reshape(M, N)
+        s = np.linalg.svd(matrix, full_matrices=False, compute_uv=False)  # shape: min(M,N) singular values
+
+    # Heuristic: ratio of top singular value to sum of them
+    top_singular = s[0]
+    total_singular = np.sum(s)
+    ratio = top_singular / (total_singular + 1e-8)
+
+    # Decide a threshold
+    # For demonstration, let's say ratio > 0.20 => suspicious 
+    # (You would tune / learn this threshold from known data.)
+    threshold = 0.20
+    is_poisoned = (ratio > threshold)
+
+    # Optional console prints for debugging
+    print(f"[PoisonCheck] top_singular={top_singular:.3f}, sum={total_singular:.3f}, ratio={ratio:.3f}, threshold={threshold}")
+
+    return is_poisoned
 
 # --------------------------------------------------------------------------------
 # Final report assembly
